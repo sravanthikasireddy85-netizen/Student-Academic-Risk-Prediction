@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+data/student_risk.db
+models/*.pkl
+models/model_metadata.json
