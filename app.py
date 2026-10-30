@@ -4,7 +4,7 @@ ROOT=Path(__file__).resolve().parent
 if str(ROOT) not in sys.path: sys.path.insert(0,str(ROOT))
 import streamlit as st, pandas as pd, numpy as np, json
 import matplotlib.pyplot as plt
-from src.database import init_db, save_student, get_students, delete_student, save_prediction, get_predictions, save_metrics, get_metrics
+from src.database import init_db, save_student, get_students, delete_student, save_prediction, get_predictions, save_metrics, get_metrics, save_student_and_prediction
 from src.data_preprocessing import FEATURES, validate_student
 from src.predict import predict_student, load_model
 from src.train_model import train
@@ -21,9 +21,12 @@ except Exception as e: st.error(f'Model loading failed: {e}'); st.stop()
 page=st.sidebar.radio('Navigation',['Dashboard','Student Prediction','Student Records','Early Warning System','Model Performance','Data Upload','About Project'])
 st.sidebar.caption('Local demo • SQLite • No paid API')
 st.sidebar.info('Privacy: use anonymized student data. Predictions support early intervention, not punishment.')
-def show_result(result,student,save=False):
+def show_result(result, student):
     st.subheader('Student Academic Risk')
-    c1,c2,c3=st.columns(3); c1.metric('Risk level',result['risk_level']); c2.metric('Model-estimated risk probability',f"{result['risk_probability']*100:.1f}%"); c3.metric('Model',result['model_name'])
+    c1,c2,c3=st.columns(3)
+    c1.metric('Risk level',result['risk_level'])
+    c2.metric('Model-estimated risk probability',f"{result['risk_probability']*100:.1f}%")
+    c3.metric('Model',result['model_name'])
     st.caption(result['note'])
     left,right=st.columns(2)
     with left:
@@ -34,8 +37,7 @@ def show_result(result,student,save=False):
     with right:
         st.markdown('**Recommended supportive actions**')
         for x in result['recommendations']: st.write('☑ '+x)
-    if save and st.button('Save Prediction',type='primary'):
-        save_student(student); save_prediction(student['student_id'],result); st.success('Student record and prediction history saved locally.')
+    st.success(f"Prediction for {student['student_name']} was saved to the local database. Open Dashboard or Student Records to view it.")
 
 def student_form(prefix='student'):
     with st.form(prefix+'_form'):
@@ -76,8 +78,14 @@ elif page=='Student Prediction':
         if errors:
             for e in errors: st.error(e)
         else:
-            try: result=predict_student(student); show_result(result,student,save=True)
-            except Exception as e: st.error(f'Prediction failed: {e}')
+            try:
+                result=predict_student(student)
+                # Save immediately on prediction submission. A second Streamlit button
+                # triggers a rerun and loses the original form-submitted state.
+                save_student_and_prediction(student, result)
+                show_result(result, student)
+            except Exception as e:
+                st.error(f'Prediction or database save failed: {e}')
 elif page=='Student Records':
     st.title('Student Records'); students=get_students(); df=pd.DataFrame(students)
     if df.empty: st.info('No saved records yet. Save a prediction first.')
@@ -114,7 +122,7 @@ elif page=='Model Performance':
         with st.spinner('Training models...'): new=train(); save_metrics(new['metrics'])
         st.success('Models retrained. Refresh the app to load the updated model.')
 elif page=='Data Upload':
-    st.title('Data Upload'); st.write('Upload a CSV with the student feature columns. Predictions are generated locally; uploaded data is not automatically saved to the database.')
+    st.title('Data Upload'); st.write('Upload a CSV with student feature columns. Valid predictions are saved to the local database and appear on the Dashboard and Student Records pages.')
     st.caption('Required columns: '+', '.join(FEATURES)); uploaded=st.file_uploader('Upload student CSV',type=['csv'])
     if uploaded:
         try:
@@ -127,10 +135,12 @@ elif page=='Data Upload':
                     student=row.to_dict(); issue=validate_student(student)
                     if issue: errors.append({'row':int(i)+2,'errors':' '.join(issue)}); continue
                     try:
-                        result=predict_student(student); results.append({**{k:student.get(k) for k in ['student_id','student_name']},'risk_level':result['risk_level'],'risk_probability_pct':round(result['risk_probability']*100,2),'main_reasons':'; '.join(result['reasons']),'recommendations':'; '.join(result['recommendations'])})
+                        result=predict_student(student)
+                        save_student_and_prediction(student, result)
+                        results.append({**{k:student.get(k) for k in ['student_id','student_name']},'risk_level':result['risk_level'],'risk_probability_pct':round(result['risk_probability']*100,2),'main_reasons':'; '.join(result['reasons']),'recommendations':'; '.join(result['recommendations'])})
                     except Exception as e: errors.append({'row':int(i)+2,'errors':str(e)})
                 if results:
-                    out=pd.DataFrame(results); st.success(f'Predictions generated for {len(out)} row(s).'); st.dataframe(out,use_container_width=True); st.download_button('Download prediction results CSV',out.to_csv(index=False).encode('utf-8'),file_name='student_risk_predictions.csv',mime='text/csv')
+                    out=pd.DataFrame(results); st.success(f'{len(out)} prediction(s) generated and saved to the local database.'); st.dataframe(out,use_container_width=True); st.download_button('Download prediction results CSV',out.to_csv(index=False).encode('utf-8'),file_name='student_risk_predictions.csv',mime='text/csv')
                 if errors: st.error(f'{len(errors)} row(s) failed validation.'); st.dataframe(pd.DataFrame(errors),use_container_width=True)
         except Exception as e: st.error(f'Could not read CSV: {e}')
 elif page=='About Project':
